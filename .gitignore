@@ -1,5 +1,6 @@
 .docusaurus/
 node_modules/
+pyautogen
 # Project
 /.vs
 .vscode

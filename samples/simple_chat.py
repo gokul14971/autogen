@@ -9,8 +9,7 @@ def main():
     # For example, if you have created a OAI_CONFIG_LIST file in the current working directory, that file will be used.
     # config_list = config_list_from_json(env_or_file="env.json")
 
-    # Create the agent that uses the LLM.
-    llm_config={'config_list': [{'model': 'gpt-4-1106-preview', 'api_key': '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','stream':True}]}
+
     user_proxy = UserProxyAgent(
         name="User_proxy",
         system_message="A human admin.",
