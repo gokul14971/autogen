@@ -61,6 +61,9 @@ class ConversableAgent(Agent):
         llm_config: Optional[Union[Dict, Literal[False]]] = None,
         default_auto_reply: Optional[Union[str, Dict, None]] = "",
         description: Optional[str] = None,
+        use_socket:Optional[bool]=False,
+        socket_server:Optional[any]='',
+        s_id:Optional[str]=''
     ):
         """
         Args:
@@ -124,6 +127,10 @@ class ConversableAgent(Agent):
             if isinstance(llm_config, dict):
                 self.llm_config.update(llm_config)
             self.client = OpenAIWrapper(**self.llm_config)
+
+        self.use_socket = use_socket
+        self.socket_server = socket_server
+        self.s_id = s_id
 
         self._code_execution_config: Union[Dict, Literal[False]] = (
             {} if code_execution_config is None else code_execution_config
@@ -503,6 +510,15 @@ class ConversableAgent(Agent):
                         self.llm_config and self.llm_config.get("allow_format_str_template", False),
                     )
                 print(content_str(content), flush=True)
+                
+                payload = {
+                      'sender' :sender.name,
+                      'message':content_str(content)
+                  }  
+                room = self.s_id
+                # self.socket_server.emit('on_completion',payload)
+
+
             if "function_call" in message and message["function_call"]:
                 function_call = dict(message["function_call"])
                 func_print = (
@@ -756,10 +772,29 @@ class ConversableAgent(Agent):
                 all_messages.append(message)
 
         # TODO: #1143 handle token limit exceeded error
+        name = sender.name if sender is not None else None
+
+       
+        socket_config = {
+            "use_socket" : False,
+            "s_id" : self.s_id,
+            "socket_server":self.socket_server,
+            "sender":self.name
+        }
+            
+        if name :
+           
+           socket_config['use_socket'] = True
+
+
+        print(colored(self.name, "red"), f"(sender{name}:\n", flush=True)
+      
+
         response = client.create(
+            socket_config=socket_config,
             context=messages[-1].pop("context", None), messages=self._oai_system_message + all_messages
         )
-
+        # print(response,'from the openai')
         extracted_response = client.extract_text_or_completion_object(response)[0]
 
         # ensure function and tool calls will be accepted when sent back to the LLM
@@ -772,6 +807,7 @@ class ConversableAgent(Agent):
                 )
             for tool_call in extracted_response.get("tool_calls") or []:
                 tool_call["function"]["name"] = self._normalize_name(tool_call["function"]["name"])
+        print(colored(extracted_response, "red"))
         return True, extracted_response
 
     async def a_generate_oai_reply(
