@@ -67,4 +67,4 @@ class TextAnalyzerAgent(ConversableAgent):
             [analysis_instructions, text_to_analyze, analysis_instructions]
         )  # Repeat the instructions.
         # Generate and return the analysis string.
-        return self.generate_oai_reply([{"role": "user", "content": msg_text}], None, None)[1]
+        return self.generate_oai_reply([{"role": "user", "content": msg_text}], None, None)[1][0]

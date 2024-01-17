@@ -209,6 +209,8 @@ Reply "TERMINATE" in the end when everything is done.
                 if messages is not None and sender is not None and messages != self._oai_messages[sender]:
                     messages = self._oai_messages[sender]
                 if final:
+                    if isinstance(reply, tuple):
+                        reply = reply[0]
                     return reply
         return self._default_auto_reply
 

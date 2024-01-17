@@ -61,9 +61,9 @@ class ConversableAgent(Agent):
         llm_config: Optional[Union[Dict, Literal[False]]] = None,
         default_auto_reply: Optional[Union[str, Dict, None]] = "",
         description: Optional[str] = None,
-        use_socket:Optional[bool]=False,
-        socket_server:Optional[any]='',
-        s_id:Optional[str]=''
+        use_socket: Optional[bool] = False,
+        socket_server: Optional[any] = "",
+        room_name: Optional[str] = "",
     ):
         """
         Args:
@@ -111,6 +111,10 @@ class ConversableAgent(Agent):
         super().__init__(name)
         # a dictionary of conversations, default value is list
         self._oai_messages = defaultdict(list)
+
+        # a dictionary of conversation used for the sending it to client which include the metadata
+        self._oai_messages_socket = defaultdict(list)
+
         self._oai_system_message = [{"content": system_message, "role": "system"}]
         self.description = description if description is not None else system_message
         self._is_termination_msg = (
@@ -130,7 +134,7 @@ class ConversableAgent(Agent):
 
         self.use_socket = use_socket
         self.socket_server = socket_server
-        self.s_id = s_id
+        self.room_name = room_name
 
         self._code_execution_config: Union[Dict, Literal[False]] = (
             {} if code_execution_config is None else code_execution_config
@@ -342,7 +346,9 @@ class ConversableAgent(Agent):
             raise ValueError(f"Invalid name: {name}. Name must be less than 64 characters.")
         return name
 
-    def _append_oai_message(self, message: Union[Dict, str], role, conversation_id: Agent) -> bool:
+    def _append_oai_message(
+        self, message: Union[Dict, str], role, conversation_id: Agent, metadata: Optional[dict] = {}
+    ) -> bool:
         """Append a message to the ChatCompletion conversation.
 
         If the message received is a string, it will be put in the "content" field of the new dictionary.
@@ -378,7 +384,17 @@ class ConversableAgent(Agent):
 
         if oai_message.get("function_call", False) or oai_message.get("tool_calls", False):
             oai_message["role"] = "assistant"  # only messages with role 'assistant' can have a function call.
+
         self._oai_messages[conversation_id].append(oai_message)
+
+        #  for client
+        # Include metadata if it is not empty or None
+        temp = copy.copy(oai_message)
+        if metadata:
+            temp["metadata"] = metadata
+
+        self._oai_messages_socket[conversation_id].append(temp)
+
         return True
 
     def send(
@@ -387,6 +403,7 @@ class ConversableAgent(Agent):
         recipient: Agent,
         request_reply: Optional[bool] = None,
         silent: Optional[bool] = False,
+        metadata: Optional[dict] = {},
     ):
         """Send a message to another agent.
 
@@ -422,9 +439,9 @@ class ConversableAgent(Agent):
         """
         # When the agent composes and sends the message, the role of the message is "assistant"
         # unless it's "function".
-        valid = self._append_oai_message(message, "assistant", recipient)
+        valid = self._append_oai_message(message, "assistant", recipient, metadata=metadata)
         if valid:
-            recipient.receive(message, self, request_reply, silent)
+            recipient.receive(message, self, request_reply, silent, metadata=metadata)
         else:
             raise ValueError(
                 "Message can't be converted into a valid ChatCompletion message. Either content or function_call must be provided."
@@ -479,9 +496,11 @@ class ConversableAgent(Agent):
                 "Message can't be converted into a valid ChatCompletion message. Either content or function_call must be provided."
             )
 
-    def _print_received_message(self, message: Union[Dict, str], sender: Agent):
-        # print the message received
+    def _print_received_message(self, message: Union[Dict, str], sender: Agent, metadata):
         print(colored(sender.name, "yellow"), "(to", f"{self.name}):\n", flush=True)
+
+        socket_payload = {"role": sender.name, "message": "", "metadata": metadata}
+
         message = self._message_to_dict(message)
 
         if message.get("tool_responses"):  # Handle tool multi-call responses
@@ -500,6 +519,9 @@ class ConversableAgent(Agent):
             print(colored(func_print, "green"), flush=True)
             print(message["content"], flush=True)
             print(colored("*" * len(func_print), "green"), flush=True)
+
+            # for client
+            socket_payload["message"] = message["content"]
         else:
             content = message.get("content")
             if content is not None:
@@ -510,14 +532,8 @@ class ConversableAgent(Agent):
                         self.llm_config and self.llm_config.get("allow_format_str_template", False),
                     )
                 print(content_str(content), flush=True)
-                
-                payload = {
-                      'sender' :sender.name,
-                      'message':content_str(content)
-                  }  
-                room = self.s_id
-                # self.socket_server.emit('on_completion',payload)
-
+                # for client
+                socket_payload["message"] = content_str(content)
 
             if "function_call" in message and message["function_call"]:
                 function_call = dict(message["function_call"])
@@ -546,17 +562,25 @@ class ConversableAgent(Agent):
                     )
                     print(colored("*" * len(func_print), "green"), flush=True)
 
+        #  send to client
+        room = self.room_name
+        # print(socket_payload)
+        if self.use_socket:
+            self.socket_server.emit("on_completion", socket_payload, room=room)
+
         print("\n", "-" * 80, flush=True, sep="")
 
-    def _process_received_message(self, message: Union[Dict, str], sender: Agent, silent: bool):
+    def _process_received_message(
+        self, message: Union[Dict, str], sender: Agent, silent: bool, metadata: Optional[dict] = {}
+    ):
         # When the agent receives a message, the role of the message is "user". (If 'role' exists and is 'function', it will remain unchanged.)
-        valid = self._append_oai_message(message, "user", sender)
+        valid = self._append_oai_message(message, "user", sender, metadata=metadata)
         if not valid:
             raise ValueError(
                 "Received message can't be converted into a valid ChatCompletion message. Either content or function_call must be provided."
             )
         if not silent:
-            self._print_received_message(message, sender)
+            self._print_received_message(message, sender, metadata=metadata)
 
     def receive(
         self,
@@ -564,6 +588,7 @@ class ConversableAgent(Agent):
         sender: Agent,
         request_reply: Optional[bool] = None,
         silent: Optional[bool] = False,
+        metadata: Optional[dict] = {},
     ):
         """Receive a message from another agent.
 
@@ -588,12 +613,14 @@ class ConversableAgent(Agent):
         Raises:
             ValueError: if the message can't be converted into a valid ChatCompletion message.
         """
-        self._process_received_message(message, sender, silent)
+        self._process_received_message(message, sender, silent, metadata=metadata)
         if request_reply is False or request_reply is None and self.reply_at_receive[sender] is False:
             return
         reply = self.generate_reply(messages=self.chat_messages[sender], sender=sender)
+        if isinstance(reply, tuple):
+            reply, metadata = reply[0], reply[1]
         if reply is not None:
-            self.send(reply, sender, silent=silent)
+            self.send(reply, sender, silent=silent, metadata=metadata)
 
     async def a_receive(
         self,
@@ -751,7 +778,7 @@ class ConversableAgent(Agent):
         messages: Optional[List[Dict]] = None,
         sender: Optional[Agent] = None,
         config: Optional[OpenAIWrapper] = None,
-    ) -> Tuple[bool, Union[str, Dict, None]]:
+    ) -> Tuple[bool, Union[str, Dict, Tuple, None]]:
         """Generate a reply using autogen.oai."""
         client = self.client if config is None else config
         if client is None:
@@ -774,28 +801,31 @@ class ConversableAgent(Agent):
         # TODO: #1143 handle token limit exceeded error
         name = sender.name if sender is not None else None
 
-       
+        # print('\n\n',colored(messages,'red'),'\n\n' )
         socket_config = {
-            "use_socket" : False,
-            "s_id" : self.s_id,
-            "socket_server":self.socket_server,
-            "sender":self.name
+            "use_socket": False,
+            "room_name": self.room_name,
+            "socket_server": self.socket_server,
+            "sender": self.name,
         }
-            
-        if name :
-           
-           socket_config['use_socket'] = True
+        print("\n\n socket config", socket_config)
 
+        if name and self.use_socket:
+            socket_config["use_socket"] = True
+
+        print("\n\n socket config", socket_config)
 
         print(colored(self.name, "red"), f"(sender{name}:\n", flush=True)
-      
 
         response = client.create(
             socket_config=socket_config,
-            context=messages[-1].pop("context", None), messages=self._oai_system_message + all_messages
+            context=messages[-1].pop("context", None),
+            messages=self._oai_system_message + all_messages,
         )
         # print(response,'from the openai')
         extracted_response = client.extract_text_or_completion_object(response)[0]
+
+        extract_metadata = client.extract_metadata(response)
 
         # ensure function and tool calls will be accepted when sent back to the LLM
         if not isinstance(extracted_response, str):
@@ -807,8 +837,8 @@ class ConversableAgent(Agent):
                 )
             for tool_call in extracted_response.get("tool_calls") or []:
                 tool_call["function"]["name"] = self._normalize_name(tool_call["function"]["name"])
-        print(colored(extracted_response, "red"))
-        return True, extracted_response
+
+        return True, (extracted_response, extract_metadata)
 
     async def a_generate_oai_reply(
         self,

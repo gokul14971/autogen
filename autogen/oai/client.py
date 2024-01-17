@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from typing import Any, List, Optional, Dict, Callable, Tuple, Union
 import logging
 import inspect
@@ -207,7 +208,7 @@ class OpenAIWrapper:
             ]
         return params
 
-    def create(self,socket_config='', **config: Any) -> ChatCompletion:
+    def create(self, socket_config="", **config: Any) -> ChatCompletion:
         """Make a completion for a given config using openai's clients.
         Besides the kwargs allowed in openai's client, we allow the following additional kwargs.
         The config in each client will be overridden by the config.
@@ -276,7 +277,7 @@ class OpenAIWrapper:
                             return response
                         continue  # filter is not passed; try the next config
             try:
-                response = self._completions_create(client, params,socket_config)
+                response = self._completions_create(client, params, socket_config)
             except APIError as err:
                 error_code = getattr(err, "code", None)
                 if error_code == "content_filter":
@@ -414,7 +415,9 @@ class OpenAIWrapper:
         else:
             raise RuntimeError("Tool call is not found, this should not happen.")
 
-    def _completions_create(self, client: OpenAI, params: Dict[str, Any],socket_config:Dict[Any]='') -> ChatCompletion:
+    def _completions_create(
+        self, client: OpenAI, params: Dict[str, Any], socket_config: Dict[Any] = ""
+    ) -> ChatCompletion:
         """Create a completion for a given config using openai's client.
 
         Args:
@@ -425,8 +428,11 @@ class OpenAIWrapper:
             The completion.
         """
         completions: Completions = client.chat.completions if "messages" in params else client.completions  # type: ignore [attr-defined]
+        print("from completion", socket_config)
+        # calculate time complexity
+        start_time = time.time()
         # If streaming is enabled and has messages, then iterate over the chunks of the response.
-        if params.get("stream", False) and "messages" in params and socket_config.get("use_socket",False):
+        if params.get("stream", False) and "messages" in params and socket_config.get("use_socket", False):
             response_contents = [""] * params.get("n", 1)
             finish_reasons = [""] * params.get("n", 1)
             completion_tokens = 0
@@ -437,9 +443,8 @@ class OpenAIWrapper:
             # Prepare for potential function call
             full_function_call: Optional[Dict[str, Any]] = None
             full_tool_calls: Optional[List[Optional[Dict[str, Any]]]] = None
-                        # Setting default values for variables
+            # Setting default values for variables
             first = True
-            message_uuid = str(uuid4())
 
             # Send the chat completion request to OpenAI's API and process the response in chunks
             for chunk in completions.create(**params):
@@ -486,29 +491,27 @@ class OpenAIWrapper:
                         # End handle tool calls
 
                         # If content is present, print it to the terminal and update response variables
+
                         if content is not None:
-                            print(content, end="", flush=True)
+                            # print(content, end="", flush=True)
 
                             response_contents[choice.index] += content
                             completion_tokens += 1
 
                             #  for socket
-                            message = {
-                            "chunkId": message_uuid,
-                            "text": content,
-                            "first": first,
-                            "sender":socket_config["sender"]
-                             }
-                            room = socket_config['s_id']
-                            socket =  socket_config['socket_server']
+                            message = {"id": chunk.id, "text": content, "first": first, "role": socket_config["sender"]}
+                            room = socket_config["room_name"]
+                            socket = socket_config["socket_server"]
 
-                            # socket(message)
+                            # emitting to the socket
+                            socket.emit("on_streaming", message, room=room)
+
                             first = False
                         else:
                             # print()
                             pass
             # print(response_contents,'\nresponse')
-                
+            end_time = int(time.time() - start_time)
             # Reset the terminal text color
             print("\033[0m\n")
 
@@ -522,7 +525,8 @@ class OpenAIWrapper:
                 object="chat.completion",
                 choices=[],
                 usage=CompletionUsage(
-                    prompt_tokens=prompt_tokens,
+                    #  need to override the usage class for adding time complexity
+                    prompt_tokens=end_time,
                     completion_tokens=completion_tokens,
                     total_tokens=prompt_tokens + completion_tokens,
                 ),
@@ -557,10 +561,16 @@ class OpenAIWrapper:
                 response.choices.append(choice)
         else:
             # If streaming is not enabled, send a regular chat completion request
+
             params = params.copy()
             params["stream"] = False
             response = completions.create(**params)
+            end_time = int(time.time() - start_time)
 
+            #  need to override the usage class for adding time complexity
+
+            response.usage.prompt_tokens = end_time
+        # print(response)
         return response
 
     def _update_usage_summary(self, response: Union[ChatCompletion, Completion], use_cache: bool) -> None:
@@ -698,6 +708,19 @@ class OpenAIWrapper:
                 choice.message if choice.message.function_call is not None else choice.message.content  # type: ignore [union-attr]
                 for choice in choices
             ]
+
+    @classmethod
+    def extract_metadata(cls, response: Union[ChatCompletion, Completion]):
+        metadata = {
+            "id": response.id,
+            "total_token": response.usage.total_tokens,
+            "model": response.model,
+            #  need to modify this
+            "time_complexity": response.usage.prompt_tokens,
+            "cost": response.cost,
+        }
+
+        return metadata
 
 
 # TODO: logging

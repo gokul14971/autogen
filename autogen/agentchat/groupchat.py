@@ -222,6 +222,8 @@ Then select the next role from {[agent.name for agent in agents]} to play. Only 
         # auto speaker selection
         selector.update_system_message(self.select_speaker_msg(agents))
         final, name = selector.generate_oai_reply(messages)
+        if isinstance(name, tuple):
+            name = name[0]
         return self._finalize_speaker(last_speaker, final, name, agents)
 
     async def a_select_speaker(self, last_speaker: Agent, selector: ConversableAgent):
@@ -363,19 +365,25 @@ class GroupChatManager(ConversableAgent):
                 speaker = groupchat.select_speaker(speaker, self)
                 # let the speaker speak
                 reply = speaker.generate_reply(sender=self)
+                metadata = {}
+                if isinstance(reply, tuple):
+                    reply, metadata = reply[0], reply[1]
+                print(reply, "from the generate_reply")
             except KeyboardInterrupt:
                 # let the admin agent speak if interrupted
                 if groupchat.admin_name in groupchat.agent_names:
                     # admin agent is one of the participants
                     speaker = groupchat.agent_by_name(groupchat.admin_name)
                     reply = speaker.generate_reply(sender=self)
+                    if isinstance(reply, tuple):
+                        reply, metadata = reply[0], reply[1]
                 else:
                     # admin agent is not found in the participants
                     raise
             if reply is None:
                 break
             # The speaker sends the message without requesting a reply
-            speaker.send(reply, self, request_reply=False)
+            speaker.send(reply, self, request_reply=False, metadata=metadata)
             message = self.last_message(speaker)
             if i == groupchat.max_round - 1:
                 groupchat.append(message, speaker)
